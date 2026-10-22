@@ -5,7 +5,10 @@
       "maxDuration": 15
     },
     "api/lookup.js": {
-      "maxDuration": 15
+      "maxDuration": 20
+    },
+    "api/batch.js": {
+      "maxDuration": 30
     }
   },
   "routes": [
@@ -16,6 +19,10 @@
     {
       "src": "^/api/lookup$",
       "dest": "/api/lookup.js"
+    },
+    {
+      "src": "^/api/batch$",
+      "dest": "/api/batch.js"
     },
     {
       "src": "^/.*$",
@@ -29,6 +36,10 @@
         {
           "key": "X-Content-Type-Options",
           "value": "nosniff"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "no-referrer"
         }
       ]
     }
