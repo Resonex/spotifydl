@@ -1,0 +1,12 @@
+{
+  "name": "spottydesk-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Serverless Spotify metadata API for Vercel.",
+  "scripts": {
+    "dev": "vercel dev"
+  },
+  "devDependencies": {
+    "vercel": "^41.7.0"
+  }
+}

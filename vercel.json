@@ -1,0 +1,36 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 15
+    },
+    "api/lookup.js": {
+      "maxDuration": 15
+    }
+  },
+  "routes": [
+    {
+      "src": "^/api$",
+      "dest": "/api/index.js"
+    },
+    {
+      "src": "^/api/lookup$",
+      "dest": "/api/lookup.js"
+    },
+    {
+      "src": "^/.*$",
+      "status": 404
+    }
+  ],
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        }
+      ]
+    }
+  ]
+}
