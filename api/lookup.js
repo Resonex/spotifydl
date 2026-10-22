@@ -1,135 +1,73 @@
-const spotifyLinkPattern =
-  /^https:\/\/open\.spotify\.com\/(track|album|playlist)\/([A-Za-z0-9]{22})(?:\?[^\s#]*)?$/;
+"use strict";
 
-function sendJson(response, status, body) {
-  return response.status(status).json(body);
-}
+const { lookup, SpotifyError } = require("../lib/spotify");
 
-function artworkUrl(artwork) {
-  const sources = artwork && artwork.sources;
-  return Array.isArray(sources) && sources.length
-    ? sources[sources.length - 1].url
-    : "";
-}
-
-function formatDate(date) {
-  if (!date || !date.year) return "";
-  return `${date.year}-${String(date.month || 1).padStart(2, "0")}-${String(
-    date.day || 1
-  ).padStart(2, "0")}`;
-}
-
-async function getSpotifyEntity(type, id) {
-  const page = await fetch(`https://open.spotify.com/${type}/${id}`, {
-    headers: { "User-Agent": "Mozilla/5.0 (compatible; Spottydesk/1.0)" },
-    signal: AbortSignal.timeout(10000)
-  });
-
-  if (!page.ok) {
-    throw new Error(`Spotify returned HTTP ${page.status}.`);
-  }
-
-  const html = await page.text();
-  const stateMatch =
-    /<script id="initialState" type="text\/plain">(.*?)<\/script>/s.exec(html);
-  if (!stateMatch) {
-    throw new Error("Spotify metadata was not present in the page.");
-  }
-
-  const stateJson = decodeURIComponent(stateMatch[1]);
-  const state = JSON.parse(Buffer.from(stateJson, "base64").toString("utf8"));
-  const entity = state.entities?.items?.[`spotify:${type}:${id}`];
-
-  if (!entity) {
-    throw new Error("Spotify metadata did not include the requested item.");
-  }
-
-  return entity;
-}
-
-function getTrackMetadata(entity) {
-  const artists = [
-    ...(entity.firstArtist?.items || []),
-    ...(entity.otherArtists?.items || [])
-  ]
-    .map((item) => item.profile?.name)
-    .filter(Boolean);
-  const album = entity.albumOfTrack || {};
-
-  return {
-    title: entity.name,
-    artist: artists.join(", "),
-    year: formatDate(album.date),
-    album: album.name || "",
-    id: entity.id,
-    albumCoverURL: artworkUrl(album.coverArt),
-    trackNumber: entity.trackNumber
-  };
-}
-
-function getAlbumMetadata(entity) {
-  const artist = (entity.artists?.items || [])
-    .map((item) => item.profile?.name)
-    .filter(Boolean)
-    .join(", ");
-  const albumCoverURL = artworkUrl(entity.coverArt);
-  const tracks = (entity.tracksV2?.items || [])
-    .map((item) => item.track)
-    .filter((track) => track && track.name)
-    .map((track) => ({
-      title: track.name,
-      artist:
-        (track.artists?.items || [])
-          .map((item) => item.profile?.name)
-          .filter(Boolean)
-          .join(", ") || artist,
-      album: entity.name,
-      year: formatDate(entity.date),
-      trackNumber: track.trackNumber,
-      albumCoverURL
-    }));
-
-  return {
-    name: entity.name,
-    artist,
-    year: formatDate(entity.date),
-    trackCount: entity.tracksV2?.totalCount || tracks.length,
-    tracks,
-    albumCoverURL
-  };
-}
-
-function getPlaylistMetadata(entity) {
-  const tracks = (entity.content?.items || [])
-    .map((item) => item.itemV2?.data)
-    .filter((track) => track && track.name)
-    .map((track) => ({
-      title: track.name,
-      artist: (track.artists?.items || [])
-        .map((item) => item.profile?.name)
-        .filter(Boolean)
-        .join(", "),
-      album: track.albumOfTrack?.name || "",
-      trackNumber: track.trackNumber,
-      albumCoverURL: artworkUrl(track.albumOfTrack?.coverArt)
-    }));
-
-  return {
-    name: entity.name,
-    owner: entity.ownerV2?.data?.name || "",
-    description: entity.description || "",
-    followerCount: entity.followers || 0,
-    trackCount: entity.content?.totalCount || tracks.length,
-    tracks,
-    playlistCoverURL: entity.images?.items?.[0]?.sources?.[0]?.url || ""
-  };
-}
+const MAX_URL_LENGTH = 500;
 
 function setCorsHeaders(response) {
   response.setHeader("Access-Control-Allow-Origin", "*");
-  response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  response.setHeader(
+    "Access-Control-Allow-Methods",
+    "GET, HEAD, POST, OPTIONS"
+  );
   response.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  response.setHeader("Cache-Control", "public, s-maxage=300, stale-while-revalidate=600");
+  response.setHeader("Access-Control-Max-Age", "86400");
+  response.setHeader(
+    "Cache-Control",
+    "public, s-maxage=300, stale-while-revalidate=600"
+  );
+}
+
+function firstValue(value) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function readUrl(request) {
+  if (request.method === "GET" || request.method === "HEAD") {
+    return firstValue(request.query?.url);
+  }
+
+  const body = request.body;
+
+  if (typeof body === "string") {
+    try {
+      return JSON.parse(body)?.url;
+    } catch {
+      return undefined;
+    }
+  }
+
+  return body?.url;
+}
+
+function readBoolean(value) {
+  const raw = firstValue(value);
+  if (typeof raw === "boolean") return raw;
+  if (typeof raw !== "string") return false;
+  return ["1", "true", "yes", "on", "raw"].includes(raw.toLowerCase());
+}
+
+function readFields(value) {
+  const raw = firstValue(value);
+  if (typeof raw !== "string") return null;
+
+  const fields = raw
+    .split(",")
+    .map((field) => field.trim())
+    .filter(Boolean);
+
+  return fields.length ? fields : null;
+}
+
+function pickFields(result, fields) {
+  if (!fields) return result;
+
+  return fields.reduce((picked, field) => {
+    if (Object.prototype.hasOwnProperty.call(result, field)) {
+      picked[field] = result[field];
+    }
+    return picked;
+  }, {});
 }
 
 module.exports = async function handler(request, response) {
@@ -139,47 +77,53 @@ module.exports = async function handler(request, response) {
     return response.status(204).end();
   }
 
-  let inputUrl;
-  if (request.method === "GET") {
-    inputUrl = request.query && request.query.url;
-  } else if (request.method === "POST") {
-    inputUrl = request.body && request.body.url;
-  } else {
-    response.setHeader("Allow", "GET, POST, OPTIONS");
-    return sendJson(response, 405, {
+  const allowed = ["GET", "HEAD", "POST"];
+  if (!allowed.includes(request.method)) {
+    response.setHeader("Allow", `${allowed.join(", ")}, OPTIONS`);
+    return response.status(405).json({
       error: "Use GET or POST for Spotify lookups."
     });
   }
 
-  if (typeof inputUrl !== "string" || inputUrl.length > 500) {
-    return sendJson(response, 400, {
+  const inputUrl = readUrl(request);
+
+  if (typeof inputUrl !== "string" || !inputUrl.trim()) {
+    return response.status(400).json({
       error: "Provide a Spotify URL in the url query parameter or JSON body."
     });
   }
 
-  const match = spotifyLinkPattern.exec(inputUrl.trim());
-  if (!match) {
-    return sendJson(response, 400, {
-      error: "Use a Spotify track, album, or playlist link."
+  if (inputUrl.length > MAX_URL_LENGTH) {
+    return response.status(400).json({
+      error: `Spotify URL must be ${MAX_URL_LENGTH} characters or fewer.`
     });
   }
 
-  const [, type, id] = match;
+  const includeRaw = readBoolean(request.query?.raw);
+  const fields = readFields(request.query?.fields);
 
   try {
-    const entity = await getSpotifyEntity(type, id);
-    const result =
-      type === "track"
-        ? getTrackMetadata(entity)
-        : type === "album"
-          ? getAlbumMetadata(entity)
-          : getPlaylistMetadata(entity);
+    const { type, result, entity } = await lookup(inputUrl);
 
-    return sendJson(response, 200, { type, result });
+    const body = { type, result: pickFields(result, fields) };
+    if (includeRaw && !fields) {
+      body.raw = entity;
+    }
+
+    if (request.method === "HEAD") {
+      return response.status(200).end();
+    }
+
+    return response.status(200).json(body);
   } catch (error) {
-    console.error("Spotify metadata lookup failed:", error);
-    return sendJson(response, 502, {
-      error: "Spotify metadata could not be read. Try again or check the link."
+    const status = error instanceof SpotifyError ? error.status : 502;
+    console.error("Spotify lookup failed:", error?.message || error);
+
+    return response.status(status).json({
+      error:
+        error instanceof SpotifyError
+          ? error.message
+          : "Spotify metadata could not be read. Try again or check the link."
     });
   }
 };
